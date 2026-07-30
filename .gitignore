@@ -1,3 +1,51 @@
+# =====================================================================
+# mv-exporter project-specific rules — DO NOT REMOVE
+# These keep credentials, a tenant's data, and PHI out of git history.
+# git history is permanent: if these are committed once, they persist
+# even after deletion. Verify `git status` before every commit.
+# =====================================================================
+
+# secrets & tenant config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+keystore.json
+*.keystore
+
+# exported data & anything derived from a real tenant (may contain PHI/PII)
+output/
+outputs/
+exports/
+data/
+archive*.db
+archive*.db.enc
+*.sqlite
+*.sqlite3
+*.parquet
+*_manifest*.jsonl
+*.meta.json
+audit*.log
+*_audit*.log
+
+# your real form-selection list often names real modules — ship only the example
+forms.txt
+forms.*.txt
+!forms.example.txt
+
+# raw dev captures — embed real URLs, cookies, and data
+*.har
+*.har.zip
+captures/
+
+# macOS
+.DS_Store
+
+# =====================================================================
+# Standard Python .gitignore (GitHub template) follows
+# =====================================================================
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
