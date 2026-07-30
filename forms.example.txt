@@ -1,0 +1,16 @@
+# Forms to export — one Multiview form code per line.
+# Blank lines and lines starting with "#" are ignored.
+# The exporter resolves each form's structure at runtime; forms it can't
+# profile are reported and skipped rather than exported incorrectly.
+
+# --- core ledgers ---
+VOUCHER_F1          # AP vouchers (bills)
+ENTRY_F1            # GL journal entries
+AR_INQUIRY_F1       # AR transactions
+
+# --- detail / distribution / lines ---
+VOUCHER_DIST_INQUIRY_F1
+ENTRY_DETAIL_F1
+AR_LINE_DETAIL_INQUIRY_F1
+AR_DIST_INQUIRY_F1
+AR_BATCH_INQUIRY_F1
