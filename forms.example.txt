@@ -1,16 +1,24 @@
-# Forms to export — one Multiview form code per line.
-# Blank lines and lines starting with "#" are ignored.
-# The exporter resolves each form's structure at runtime; forms it can't
-# profile are reported and skipped rather than exported incorrectly.
+# ============================================================================
+# forms.example.txt — TEMPLATE ONLY. Copy to "forms.txt" and replace the
+# contents with the forms YOUR organization actually uses.
+#
+# Format: one Multiview form code per line. Blank lines and lines starting
+# with "#" are ignored. Everything after a "#" on a line is a comment.
+#
+# How to find your form codes: every Multiview instance exposes its own set
+# of forms (they differ by which modules your org licenses/uses). Pull your
+# catalog and pick the forms you want to archive — do not assume the examples
+# below match your tenant. The exporter resolves each form's structure at
+# runtime and skips (loudly) any form it cannot profile.
+# ============================================================================
 
-# --- core ledgers ---
-VOUCHER_F1          # AP vouchers (bills)
-ENTRY_F1            # GL journal entries
-AR_INQUIRY_F1       # AR transactions
+# The examples below are only to show the SYNTAX. Replace them.
+# (AP / GL / AR exist on most Multiview installs, but confirm against your own.)
 
-# --- detail / distribution / lines ---
-VOUCHER_DIST_INQUIRY_F1
-ENTRY_DETAIL_F1
-AR_LINE_DETAIL_INQUIRY_F1
-AR_DIST_INQUIRY_F1
-AR_BATCH_INQUIRY_F1
+VOUCHER_F1          # example: AP vouchers header
+ENTRY_F1            # example: GL journal entry header
+AR_INQUIRY_F1       # example: AR transactions
+
+# Add the detail/line and any other forms your org uses, e.g.:
+# VOUCHER_DIST_INQUIRY_F1   # AP distribution lines (if you use them)
+# ENTRY_DETAIL_F1           # GL journal lines
