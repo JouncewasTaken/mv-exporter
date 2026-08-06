@@ -264,3 +264,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+mv_landing.db
+mv_landing.db-shm
+mv_landing.db-wal
