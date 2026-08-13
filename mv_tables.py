@@ -154,7 +154,7 @@ def land_rows(con, table, rows, source_form):
 # ---------- driver ----------
 def _open(driver, form_code):
     """Configure for a form, open it (mints a fresh cacheID/token), return (cache_id, token)."""
-    mx._configure(form_code)
+    mx._configure(form_code, require_module=False)
     return mx.open_form(driver)
 
 def main():
@@ -215,7 +215,7 @@ def main():
                                       mx.MV_SUBDOMAIN, status="ok")
                 con.commit()
                 print(f"[ok] {code} -> {table}: {len(rows)} rows, +{inserted} new, {len(cols)} cols")
-            except Exception as e:
+            except (Exception, SystemExit) as e:
                 gov.record_extraction(con, "?", code, table, args.year, 0, 0,
                                       mx.MV_SUBDOMAIN, status="error", note=repr(e)[:300])
                 con.commit()

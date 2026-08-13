@@ -83,18 +83,18 @@ MODULES = {
 FORM_URL = "VOUCHER_F1"     # default module; override with --form-url (bare code or full URL). Tenant comes from BASE.
 
 FORM_NAME = GRID = ID_COL = MOD = None          # set by _configure()
-def _configure(form_url):
+def _configure(form_url, require_module=True):
     global FORM_URL, FORM_NAME, GRID, ID_COL, MOD
     raw = (form_url or "").strip()
-    # Accept a full URL, a path, or a bare form code; derive the code from the last path segment.
     code = raw.rstrip("/").split("/")[-1].split("?")[0].split("#")[0]
-    if code not in MODULES:
-        sys.exit(f"unknown form code '{code}' (from {raw!r}) — known: {', '.join(MODULES)}")
     FORM_NAME = code
-    # Always resolve to a valid absolute URL. If a full URL was given, keep it; otherwise
-    # rebuild the canonical form entry point (bare codes/paths lack a scheme -> driver.get fails).
     FORM_URL = raw if raw.startswith(("http://", "https://")) else f"{BASE}/prod/Multiview/FormName/{code}"
-    MOD, GRID, ID_COL = MODULES[code], MODULES[code]["grid"], MODULES[code]["id_col"]
+    if code in MODULES:
+        MOD, GRID, ID_COL = MODULES[code], MODULES[code]["grid"], MODULES[code]["id_col"]
+    elif require_module:
+        sys.exit(f"unknown form code '{code}' (from {raw!r}) — known: {', '.join(MODULES)}")
+    else:
+        MOD = GRID = ID_COL = None      # table path discovers the grid dynamically
 _configure(FORM_URL)
 
 def _year_criterion(year):
