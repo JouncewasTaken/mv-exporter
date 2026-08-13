@@ -114,6 +114,10 @@ _HDRS = {"content-type": "application/x-www-form-urlencoded; charset=UTF-8",
 # ---------- auth + form-state (login VERIFIED; extraction fail-loud) ----------
 def build_driver(headless=True):
     o = Options()
+    prof = os.environ.get("MV_CHROME_PROFILE")
+    if prof:
+        os.makedirs(prof, mode=0o700, exist_ok=True)
+        o.add_argument(f"--user-data-dir={prof}")
     if headless: o.add_argument("--headless=new")
     o.add_argument("--no-sandbox"); o.add_argument("--disable-dev-shm-usage")
     o.set_capability("goog:loggingPrefs", {"performance": "ALL"})   # to harvest cacheID from form traffic
