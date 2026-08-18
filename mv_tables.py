@@ -36,7 +36,7 @@ import mv_exporter as mx          # reuse plumbing (runs _load_dotenv at import;
 import init_archive as gov        # governance scaffolding + helpers
 
 # tables in an enumeration response that are never the grid (support/scaffolding/lookup)
-_NOISE_TABLES = {"FORM", "PARM", "Q", "CTRL", "REV", "CCR", "PIVOT"}
+_NOISE_TABLES = {"FORM", "PARM", "Q", "CTRL", "REV", "CCR", "PIVOT", "ADD"}
 
 # ---------- row hygiene ----------
 # Column policy: KEEP ALL columns. "Unused RAD" slots are opaque P_N fields whose
@@ -84,32 +84,126 @@ def discover_grid_table(resp_json):
     cands.sort(key=lambda c: (c[2], c[1]), reverse=True)   # has-date first, then row count
     return cands[0][0]
 
+def _nonnoise_tables(resp_json):
+    """All real data panes in an enumeration response: {table_name: rows}.
+    Same filter as discover_grid_table (list-of-dict, not ENUM_*, not noise), but
+    keeps EVERY qualifying pane instead of picking one — so multi-pane forms
+    (e.g. ownerships: OD tree + OV version history + O header) don't lose panes."""
+    fds = resp_json.get("formDataSet", resp_json)
+    out = {}
+    for name, rows in (fds or {}).items():
+        if name.startswith("ENUM_") or name in _NOISE_TABLES:
+            continue
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            out[name] = rows
+    return out
+
 def _is_timeout(exc):
     if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
         return True
     r = getattr(exc, "response", None)
     return r is not None and r.status_code in (500, 502, 503, 504)
 
-def fetch_form_rows(sess, cache_id, token, form_name, lo, hi, verbose=False):
-    """Return all grid rows for a form over [lo, hi] (YYYY-MM-DD), bisecting on timeout.
-    Reuses the same cacheID across sub-ranges (one form-open covers the whole pull)."""
+# ---------- ownership version history (RunCommand=GetVersionHTML; READ-ONLY) ----------
+# Non-destructive per-version change log. GetVersionHTML returns an HTML change
+# narrative for the OV (version) row it is given as `key`. This NEVER touches the
+# "Restore Old Version" write path (ProcessCommand) — it only reads.
+import html as _htmlmod
+
+_VER_SECTIONS  = {"Items Moved from one Area to Another": "Moved"}   # extend if new classes appear
+_VER_STANDALONE = {"Initial Version Created"}
+_RE_VER  = re.compile(r'^Version\s+(\d+)\s+Changes$', re.I)
+_RE_BY   = re.compile(r'^Changes made by\s+(.+)$', re.I)
+_RE_ON   = re.compile(r'^Made on\s+(.+)$', re.I)
+_RE_MOVE = re.compile(r'^(.+?)\s+was moved from\s+(.+?)\s+to\s+(.+)$', re.I)
+
+def _version_html(sess, cache_id, token, form_name, ov_row):
+    """POST RunCommand=GetVersionHTML for one OV row; return the HTML body (read-only)."""
+    body = mx._body([
+        ("command", "GetVersionHTML"),
+        ("formName", form_name),
+        ("tableName", "OV"),
+        ("key", mx._e2([ov_row])),          # the selected version row == which version to render
+        ("allTableCurrentRowData", ""), ("formDataSet", ""),
+        ("cacheID", cache_id), ("__RequestVerificationToken", token),
+    ])
+    r = sess.post(f"{mx.BASE}/prod/Multiview/RunCommand", data=body, timeout=180)
+    r.raise_for_status()
+    return r.text
+
+def _parse_version_html(html_text, ownership_id, version_no):
+    """Parse a GetVersionHTML body into change rows. Fails loud on any line/section
+    outside the known vocabulary so a new change class surfaces instead of vanishing."""
+    h = re.sub(r'(?is)<style.*?</style>', ' ', html_text)
+    h = re.sub(r'(?is)<head.*?</head>', ' ', h)
+    h = re.sub(r'(?s)<[^>]+>', '\n', h)
+    lines = [ln.strip() for ln in _htmlmod.unescape(h).splitlines() if ln.strip()]
+    changed_by = changed_on = None
+    section = None
+    rows = []
+    def row(**kw):
+        base = dict(OWNERSHIP_ID=ownership_id, VERSION_NO=version_no,
+                    CHANGED_BY=changed_by, CHANGED_ON=changed_on,
+                    CHANGE_TYPE=None, KEY_MOVED=None, MOVED_FROM=None, MOVED_TO=None)
+        base.update(kw); return base
+    for ln in lines:
+        m = _RE_VER.match(ln)
+        if m:
+            if int(m.group(1)) != int(version_no):
+                raise ValueError(f"version mismatch: html v{m.group(1)} != expected v{version_no}")
+            section = None; continue
+        m = _RE_BY.match(ln)
+        if m: changed_by = m.group(1).strip(); continue
+        m = _RE_ON.match(ln)
+        if m: changed_on = m.group(1).strip(); continue
+        if ln in _VER_SECTIONS:
+            section = _VER_SECTIONS[ln]; continue
+        if ln in _VER_STANDALONE:
+            rows.append(row(CHANGE_TYPE=ln)); section = None; continue
+        if section == "Moved":
+            m = _RE_MOVE.match(ln)
+            if m:
+                rows.append(row(CHANGE_TYPE="Moved", KEY_MOVED=m.group(1).strip(),
+                                MOVED_FROM=m.group(2).strip(), MOVED_TO=m.group(3).strip()))
+                continue
+        raise ValueError(f"unrecognized GetVersionHTML line (extend _VER_SECTIONS): {ln!r}")
+    return rows
+
+def fetch_version_changes(sess, cache_id, token, form_name, ov_rows, verbose=False):
+    """Read every version's change log for a form's OV rows. Read-only (GetVersionHTML)."""
+    out = []
+    for ov in ov_rows:
+        ver = ov.get("VERSION_NO"); own = ov.get("OWNERSHIP_ID")
+        changes = _parse_version_html(_version_html(sess, cache_id, token, form_name, ov), own, ver)
+        out.extend(changes)
+        if verbose:
+            print(f"      v{ver}: {len(changes)} change row(s)")
+        time.sleep(mx.THROTTLE_S)
+    return out
+
+def fetch_form_tables(sess, cache_id, token, form_name, lo, hi, verbose=False):
+    """Return {table_name: rows} for ALL non-noise panes over [lo, hi], bisecting on timeout.
+    Reuses the same cacheID across sub-ranges. Small static panes (version history, headers)
+    repeat identically across sub-ranges; content-hash dedup at land time collapses them."""
     try:
         resp = _enumerate(sess, cache_id, token, form_name, lo, hi)
-        table = discover_grid_table(resp)
-        rows = mx._extract_table(resp, table)
+        tables = _nonnoise_tables(resp)
         if verbose:
-            print(f"    [{lo}..{hi}] grid='{table}' rows={len(rows)}")
-        return rows
+            summary = ", ".join(f"{n}={len(r)}" for n, r in tables.items())
+            print(f"    [{lo}..{hi}] {summary or '(no data panes)'}")
+        return tables
     except Exception as e:
         d0 = datetime.date.fromisoformat(lo); d1 = datetime.date.fromisoformat(hi)
         if _is_timeout(e) and (d1 - d0).days >= 1:
             mid = d0 + (d1 - d0) // 2
             if verbose:
                 print(f"    [{lo}..{hi}] timed out — splitting at {mid}")
-            left = fetch_form_rows(sess, cache_id, token, form_name, lo, mid.isoformat(), verbose)
-            right = fetch_form_rows(sess, cache_id, token, form_name,
-                                    (mid + datetime.timedelta(days=1)).isoformat(), hi, verbose)
-            return left + right
+            merged = fetch_form_tables(sess, cache_id, token, form_name, lo, mid.isoformat(), verbose)
+            right = fetch_form_tables(sess, cache_id, token, form_name,
+                                      (mid + datetime.timedelta(days=1)).isoformat(), hi, verbose)
+            for n, r in right.items():
+                merged.setdefault(n, []).extend(r)
+            return merged
         raise
 
 # ---------- SQLite sink ----------
@@ -165,6 +259,9 @@ def main():
     ap.add_argument("--year", type=int, help="pull one ACCOUNTING_DATE year")
     ap.add_argument("--from", dest="d_from", help="range start YYYY-MM-DD (with --to)")
     ap.add_argument("--to", dest="d_to", help="range end YYYY-MM-DD (with --from)")
+    ap.add_argument("--ownership-versions", action="store_true",
+                    help="also capture per-version change history (read-only GetVersionHTML) "
+                         "for any form that returns an OV version pane")
     ap.add_argument("--no-headless", action="store_true")
     args = ap.parse_args()
 
@@ -207,14 +304,29 @@ def main():
             table = code.lower()
             try:
                 cache_id, token = _open(driver, code)
-                rows = fetch_form_rows(sess, cache_id, token, code, lo, hi, verbose=True)
-                inserted, cols = land_rows(con, table, rows, code)
-                con.commit()
+                tables = fetch_form_tables(sess, cache_id, token, code, lo, hi, verbose=True)
+                if not tables:
+                    raise RuntimeError("no data panes in enumeration response")
+                primary = discover_grid_table(tables)      # backward-compat: main grid -> {code}
+                total_rows, landed = 0, []
+                for tname, rws in tables.items():
+                    sqlt = table if tname == primary else f"{table}__{tname.lower()}"
+                    inserted, cols = land_rows(con, sqlt, rws, code)
+                    con.commit()
+                    total_rows += len(rws)
+                    landed.append(f"{sqlt}(+{inserted}/{len(rws)})")
+                if args.ownership_versions and "OV" in tables:
+                    changes = fetch_version_changes(sess, cache_id, token, code,
+                                                    tables["OV"], verbose=True)
+                    if changes:
+                        vins, _ = land_rows(con, f"{table}__version_changes", changes, code)
+                        con.commit()
+                        landed.append(f"{table}__version_changes(+{vins}/{len(changes)})")
                 gov.record_extraction(con, mx.MODULES.get(code, {}).get("label", "?"),
-                                      code, table, args.year, len(rows), len(cols),
+                                      code, table, args.year, total_rows, len(tables),
                                       mx.MV_SUBDOMAIN, status="ok")
                 con.commit()
-                print(f"[ok] {code} -> {table}: {len(rows)} rows, +{inserted} new, {len(cols)} cols")
+                print(f"[ok] {code}: {len(tables)} pane(s) -> {', '.join(landed)}")
             except (Exception, SystemExit) as e:
                 gov.record_extraction(con, "?", code, table, args.year, 0, 0,
                                       mx.MV_SUBDOMAIN, status="error", note=repr(e)[:300])
@@ -226,3 +338,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
