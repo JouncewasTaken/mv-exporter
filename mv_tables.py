@@ -213,6 +213,23 @@ def _open(driver, form_code):
     mx._configure(form_code, require_module=False)
     return mx.open_form(driver)
 
+def _done(con, code, window):
+    """True if this (form, window) already landed ok — for resume."""
+    return con.execute("SELECT 1 FROM _extraction_manifest WHERE form_name=? AND note=? "
+                       "AND status='ok' LIMIT 1", (code, window)).fetchone() is not None
+
+def _pull_retry(driver, sess, code, lo, hi, attempts):
+    """Open + enumerate with retry on transient failures. Empty result returns {} (not an error)."""
+    for i in range(1, attempts + 1):
+        try:
+            cache_id, token = _open(driver, code)
+            return cache_id, token, fetch_form_tables(sess, cache_id, token, code, lo, hi, verbose=True)
+        except (Exception, SystemExit) as e:
+            if i == attempts:
+                raise
+            print(f"    retry {i}/{attempts} {code}: {e!r}", file=sys.stderr)
+            time.sleep(min(30, 5 * i))
+
 def main():
     ap = argparse.ArgumentParser(description="extract Multiview grid/table data to SQLite")
     ap.add_argument("--db", required=True, help="archive .sqlite path")
@@ -225,6 +242,8 @@ def main():
                     help="also capture per-version change history (read-only GetVersionHTML) "
                          "for any form that returns an OV version pane")
     ap.add_argument("--no-headless", action="store_true")
+    ap.add_argument("--no-resume", action="store_true", help="re-pull windows already logged ok")
+    ap.add_argument("--retries", type=int, default=3, help="attempts per form-window on transient failure")
     args = ap.parse_args()
 
     if not mx.MV_SUBDOMAIN or not mx.BASE:
@@ -265,11 +284,20 @@ def main():
         window = f"{lo}..{hi}"      # manifest note; year col is null under --from/--to
         for code in forms:
             table = code.lower()
+            if not args.no_resume and _done(con, code, window):
+                print(f"[skip] {code}: {window}")
+                continue
             try:
-                cache_id, token = _open(driver, code)
-                tables = fetch_form_tables(sess, cache_id, token, code, lo, hi, verbose=True)
+                cache_id, token, tables = _pull_retry(driver, sess, code, lo, hi, args.retries)
                 if not tables:
-                    raise RuntimeError("no data panes in enumeration response")
+                    # valid response, no rows this window — empty, not a failure
+                    gov.record_extraction(con, mx.MODULES.get(code, {}).get("label", "?"),
+                                          code, table, args.year, 0, 0,
+                                          mx.MV_SUBDOMAIN, status="ok", note=window)
+                    con.commit()
+                    print(f"[ok] {code}: {window} empty")
+                    time.sleep(mx.THROTTLE_S)
+                    continue
                 primary = discover_grid_table(tables)      # primary grid -> {code}
                 total_rows, landed = 0, []
                 for tname, rws in tables.items():
