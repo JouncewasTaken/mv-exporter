@@ -1,71 +1,114 @@
-# mv-exporter — landing loader
+# mv-exporter
 
-Portable (pure Python stdlib, no third-party deps) ingest scaffolding that dumps
-raw Multiview extracts into a SQLite landing DB for later refinement/verification.
-Runs identically on macOS (M1) and Linux.
+Extract your data out of Multiview ERP into a portable, self-verifying SQLite archive —
+before a migration, a vendor change, or a contract lapse. Drives the web UI the way you
+would, so it works without database access or a vendor export feature.
 
-## Files
-- `schema.sql` — landing schema (raw capture + run manifest + resume checkpoints)
-- `db.py` — connection, schema init, idempotent upsert, provenance, checkpoints
-- `adapters.py` — `ExtractAdapter` interface, `MultiviewAdapter` (seam), `DemoAdapter`
-- `run.py` — CLI orchestrator (batched, resumable, fail-loud)
-- `mv_exporter.py` — Selenium login + form-open/session plumbing; document exporter (3 core modules)
-- `mv_tables.py` — table/grid extraction into the SQLite archive (any form)
-- `init_archive.py` — governance scaffolding (metadata, extraction manifest, schema registry)
-- `archive_auth.py` — optional archive auth/encryption
+Assumes some coding comfort (Python, a shell, SQL). Not a one-click tool.
 
-## Design properties (all verified)
-- **Idempotent** — re-running upserts on `(module, record_key)`; unchanged rows do not bump `revision`.
-- **Resumable** — per-batch commit + checkpoint; interrupted long passes resume from the last committed cursor.
-- **Mutation-aware** — when a source row's payload hash changes, `revision` increments (hook for the mutable GL-JE exception report).
-- **Fail-loud** — a malformed record raises with context, the run is marked `failed`, the batch rolls back; no silent drops.
-- **Faithful** — landing stores the record as-extracted (`raw_json`) + `sha256`; typing/normalization is the later refinement layer.
+## What it does
+- **Tables/grids** (`mv_tables.py`): any form's grid → a SQLite table, banded by
+  `ACCOUNTING_DATE`, resumable and idempotent.
+- **Documents** (`mv_exporter.py`): the attached files behind AP/GL/AR transactions →
+  disk + a manifest.
+- **Governance** (`init_archive.py`): archive metadata, a per-window extraction manifest,
+  and a schema registry recording every column seen (including dropped ones), so
+  completeness stays provable.
 
-## Quick start (demo — synthetic, PHI-free)
-```bash
-python3 run.py --demo --module all --db ./mv_landing.db
+## Requirements
+- Python 3.10+, `pip install selenium requests`
+- Chrome/Chromium. Selenium 4.6+ resolves a matching driver automatically; otherwise put a
+  matching `chromedriver` on `PATH`.
+- Your Multiview login. If SSO/MFA is enabled, the first run is interactive.
+
+## Setup
+Copy `env.example` to `.env` and fill it in (`.env` is gitignored; never commit it):
+
+```
+MV_SUBDOMAIN=yourcompany          # https://<subdomain>.multiviewcorp.net
+MV_USER=...
+MV_PASS=...
+MV_EXPORT_DIR=/path/to/documents  # keep outside the repo
+MV_LANDING_DB=/path/to/archive.db # keep outside the repo
+MV_THROTTLE_S=1.0                 # politeness delay between requests
+MV_CHROME_PROFILE=/path/to/profile  # persists the session so headless runs skip re-login
 ```
 
-## Intended workflow (two machines)
-1. **Long passes on the Linux server** (always-on, off your Mac's day-to-day):
-   ```bash
-   MV_LANDING_DB=/srv/mv/mv_landing.db python3 run.py --module GL --batch-size 1000
-   ```
-2. Verify/refine against source (mutable mode — do NOT seal yet).
-3. Copy the sealed `.db` to `/Volumes/MVARCHIVE/db/` (Mac primary) and to the Linux backup partition.
-4. Serve read-only via Datasette; add `-i` once reconciled.
+Initialize the archive, then seat an authenticated session once (interactive, for MFA):
 
-DB path is never hardcoded: pass `--db` or set `MV_LANDING_DB`.
+```bash
+python init_archive.py "$MV_LANDING_DB"
+python mv_tables.py --db "$MV_LANDING_DB" --forms forms.txt --from 2025-01-01 --to 2025-01-31 --no-headless
+```
 
-## Wiring the real extractor
-Implement `MultiviewAdapter.extract(module, *, since)` in `adapters.py` to yield
-`(external_id, raw_record_dict, cursor_value)` from your proven document exporter.
-Keep it a **generator** (stream rows) and advance `cursor_value` monotonically —
-that is what makes the GL pass chunk/resume instead of timing out on a full pull.
+After that, headless runs reuse the profile until the session expires.
 
-## `mv_tables.py` — table/grid extraction
-
-Sibling to `mv_exporter.py`: reuses its login / form-open / session plumbing, so the
-document exporter stays untouched. Extraction is separate from the SQLite sink.
-
-- Each form is one bulk query, enumerated via `LoadDataQueryEntryTable`, filtered by
-  `ACCOUNTING_DATE` between a range. The grid table is auto-discovered; ambiguity fails loud.
-- All non-noise panes are captured, not just the primary grid — multi-pane forms
-  (ownerships: `OD` tree + `OV` versions + `O` header) land as `{form}` and `{form}__{pane}`.
-- Ranges that time out split in half recursively, down to a one-day floor.
-- Rows land insert-or-ignore on a per-row content hash: retries/overlaps/re-runs never
-  duplicate; no per-form key needed. Dropped RAD columns are recorded in the schema registry.
+## Pick your forms
+Multiview exposes hundreds of forms; most are config you don't need. Enumerate the catalog
+(see `forms.example.txt`), triage to the transactional/master/audit forms that matter, and
+list them one per line in a `forms.txt`.
 
 **Before a full run:** the API returns whatever columns the querying account's *saved grid
-layout* specifies. Set each form's grid to show ALL columns and save it as the default, then
-`--probe` to confirm the column count before trusting a pull.
-
-**`--ownership-versions`** also pulls each version's change log (read-only `GetVersionHTML`;
-never the "Restore Old Version" write path) into `{form}__version_changes`. Point-in-time tree
-shapes aren't snapshotted — reconstruct by replaying moves from the current `OD`.
+layout* specifies. For each form, open its grid in the web UI, show ALL columns, save it as
+the default, then `--probe` to confirm the column count matches a manual grid export.
 
 ```bash
-python mv_tables.py --db archive.db --probe VOUCHER_DIST_INQUIRY_F1 --year 2025
-python mv_tables.py --db archive.db --forms forms.txt --year 2025
-python mv_tables.py --db archive.db --forms forms.txt --from 2016-01-01 --to 2025-12-31 --ownership-versions
+python mv_tables.py --db "$MV_LANDING_DB" --probe VOUCHER_DIST_INQUIRY_F1 --year 2025
 ```
+
+## Extract tables
+```bash
+# one year, or an explicit range (band long histories by month to bound memory + checkpoint)
+python mv_tables.py --db "$MV_LANDING_DB" --forms forms.txt --year 2025
+python mv_tables.py --db "$MV_LANDING_DB" --forms forms.txt --from 2016-01-01 --to 2025-12-31
+```
+
+- **Resumable/self-healing:** re-run the same command — completed `(form, window)` pairs skip,
+  errors and gaps retry. Runs to convergence without hand-maintained re-pull lists.
+- **Idempotent:** rows land insert-or-ignore on a per-row content hash. Retries, overlaps, and
+  re-runs never duplicate; no per-form primary key needed.
+- **All panes captured:** multi-pane forms (e.g. ownership: tree + version history + header)
+  land each pane as `{form}` and `{form}__{pane}`.
+- Some forms ignore the date band and return their whole table each call — pull those once
+  over a wide range rather than month-by-month. The manifest makes them easy to spot
+  (summed rows ≫ landed rows).
+
+`--ownership-versions` additionally captures each version's change log for forms with a
+version pane (read-only; never triggers a restore).
+
+## Extract documents
+The file payloads come from `mv_exporter.py`, scoped to the three document-bearing modules:
+
+```bash
+python mv_exporter.py --form-url VOUCHER_F1    --year 2025   # AP
+python mv_exporter.py --form-url ENTRY_F1      --year 2025   # GL
+python mv_exporter.py --form-url AR_INQUIRY_F1 --year 2025   # AR
+```
+
+- Files land as `{FORM_NAME}_{company}_{record}_{doc_ref}.ext` in `MV_EXPORT_DIR`, each with a
+  `.meta.json` sidecar linking it to its parent record — so a filename identifies its module
+  and record for clickthrough.
+- Resumes via a per-module manifest keyed on `(form, company, record)`: re-running a year
+  skips records already pulled.
+- Downloads are **per record**, with no content-level dedup — the same document attached to
+  several records (or surfacing under multiple modules) is stored once per record. That's
+  intentional: it preserves each record's own copy + metadata and supports working backward
+  from any module (e.g. GL → source invoice).
+- `--count-only` reports the record count and date span without downloading; `--one CID/VID`
+  and `--dump-docs CID/VID` inspect a single record.
+
+## Design
+Fail-loud (ambiguity or an unknown response shape raises, never silently drops), faithful
+(every column kept; dropped ones still registered), and idempotent throughout. The archive
+is a queryable copy — verify it against source before you retire the live system.
+
+Built by reverse-engineering the web UI. Login, enumeration, subform loads, payload
+encoding, naming, and manifests are confirmed against a live tenant; the JSON *response*
+shapes of the data calls are inferred and parsed defensively (unexpected shapes raise). The
+document byte URL is discovered at runtime from the browser's network log, not hardcoded.
+
+## Not archiving?
+If you're mapping into another ERP rather than keeping an archive, call
+`mv_tables.fetch_form_tables()` for the rows and ignore the SQLite sink. (`run.py`,
+`adapters.py`, `db.py`, `schema.sql` are an earlier stdlib landing-loader kept as a
+reference for that path.)

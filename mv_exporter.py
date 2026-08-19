@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""
-Multiview AP-voucher document export (screen-scrape, no paid API).
-
-Names each file PK-first:  {COMPANY_ID}_{VOUCHER_ID}_{DOC_REF}.<ext>
-Sequential + throttled (vendor-hosted), idempotent (resumes via manifest), fail-loud.
-
-CONFIDENCE TIERS
-  CONFIRMED : login, enumeration (LoadDataQueryEntryTable), SF1D load (LoadData),
-              payload encoding, naming, manifest, cacheID-is-session-state.
-  INFERRED  : the JSON *response* shape of the two data calls (parsed defensively).
-  RUNTIME   : the actual file-byte URL is discovered live from Chrome's network log.
-
-FILL BEFORE RUNNING
-  FORM_URL  : the address-bar URL while the AP Vouchers form is open (mints cacheID+token).
-  MV_EXPORT_DIR env var : an existing, access-controlled output dir (PHI-bearing).
-"""
-
 import os, sys, json, time, base64, argparse, re, zipfile, io
 from pathlib import Path
 from urllib.parse import quote
@@ -300,7 +283,7 @@ def load_docs(sess, cache_id, token, entry_row):
 # ---------- naming ----------
 def target_name(cid, vid, doc, ext_hint, taken):
     ext = os.path.splitext(doc["filename"])[1].lower() or ext_hint or ".bin"
-    base = f"{cid}_{vid}_{doc['doc_ref']}"
+    base = f"{FORM_NAME}_{cid}_{vid}_{doc['doc_ref']}"
     name = base + ext
     if name in taken:
         name = f"{base}_n{doc['doc_no']}{ext}"
@@ -437,7 +420,7 @@ def download_doc(sess, cid, vid, doc, cache_id, token, vl_row, taken, verbose=Fa
     if verbose:
         print(f"    doc {doc['doc_ref']} src={doc.get('doc_source')} ct={ct!r} "
               f"bytes={len(r.content)} -> {kind}")
-    base = f"{cid}_{vid}_{doc['doc_ref']}"
+    base = f"{FORM_NAME}_{cid}_{vid}_{doc['doc_ref']}"
     if kind in ("file", "pdf"):
         nm = target_name(cid, vid, doc, ext, taken); taken.add(nm)
         (OUTPUT_DIR / nm).write_bytes(r.content)
