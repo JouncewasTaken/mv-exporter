@@ -12,8 +12,8 @@ PY() { python3 "$REPO/mv_exporter.py" "$@"; }
 
 case "${1:-}" in
   seat)  PY --form-url VOUCHER_F1 --year "$END" --no-headless --count-only ;;  # interactive: seat MFA + verify enum
-  count) for m in "${MODULES[@]}"; do for y in $(seq "$START" "$END"); do PY --form-url "$m" --year "$y" --count-only; done; done ;;
+  count) for m in "${MODULES[@]}"; do for y in $(seq "$START" "$END"); do PY --form-url "$m" --year "$y" --count-only || echo "[skip] $m $y"; done; done ;;
   one)   PY --form-url "${2:?module}" --one "${3:?CID/VID}" ;;                  # single-doc validation
-  run)   for m in "${MODULES[@]}"; do for y in $(seq "$START" "$END"); do echo ">>> $m $y"; PY --form-url "$m" --year "$y"; done; done ;;
+  run)   for m in "${MODULES[@]}"; do for y in $(seq "$START" "$END"); do echo ">>> $m $y"; PY --form-url "$m" --year "$y" || echo "[FAIL] $m $y — re-run to resume"; done; done ;;
   *) echo "usage: $0 {seat|count|one <MODULE> <CID/VID>|run}"; exit 2 ;;
 esac

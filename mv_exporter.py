@@ -241,8 +241,10 @@ def enumerate_vouchers(sess, cache_id, token, year=None):
     r.raise_for_status()
     rows = _extract_table(r.json(), GRID)
     if not rows:
-        raise RuntimeError(f"enumeration returned 0 {MOD['label']} records"
-                           + (f" for year {year}" if year else "") + " — query/criteria likely wrong")
+        print(f"[WARN] 0 {MOD['label']} records"
+              + (f" for year {year}" if year else "") + " — empty period or query mismatch",
+              file=sys.stderr)
+        return []
     if year:
         _verify_year(rows, year)
     return rows   # full grid rows; echoed back verbatim for the SF1D load
