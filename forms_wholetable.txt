@@ -1,5 +1,5 @@
-# Whole-table dumpers — IGNORE the date band, return the entire table each call.
-# Pull ONCE, and do it AFTER the data-entry cutoff (they keep growing until then).
+# Whole-table dumpers — IGNORE the band, return the entire table each call. Pull ONCE, after cutoff.
+# --- system / audit (original) ---
 MV_AUDIT_DATA_F1
 MV_LOGON_INQUIRY_F1
 MVF_SESSION_F1
@@ -11,3 +11,16 @@ MVF_SECURITY_ROLE_F1
 PATCH_LOAD_HISTORY_F1
 PATCH_LOAD_LOG_F1
 WF_INQUIRY_F1
+# --- moved from transactional: manifest ratio ~120 (re-pulled whole table every window) ---
+CHEQUE_REGISTER_F1
+PAYMENT_SELECTION_F1
+AP_1099_ACTIVITY_F1
+BANK_RECON_F1
+AR_BATCH_INQUIRY_F1
+ENTRY_ANALYSIS_F1          # small primary grid but its __s pane is whole-table
+IFACE_INQUIRY_F1
+IFACE_PROCESSED_FILES_F1
+INTERFACE_FILE_LOG_F1
+# --- as-of snapshots (aging computed at run time; not date-rangeable) ---
+AR_AGING_F1
+AR_SUMMARY_AGING_F1
