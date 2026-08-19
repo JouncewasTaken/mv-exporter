@@ -1,0 +1,13 @@
+# Whole-table dumpers — IGNORE the date band, return the entire table each call.
+# Pull ONCE, and do it AFTER the data-entry cutoff (they keep growing until then).
+MV_AUDIT_DATA_F1
+MV_LOGON_INQUIRY_F1
+MVF_SESSION_F1
+MV_DOC_F1
+MV_UPLOAD_FILES_F1
+MV_EMAIL_BATCH_F1
+MV_EMAIL_INQUIRY_F1
+MVF_SECURITY_ROLE_F1
+PATCH_LOAD_HISTORY_F1
+PATCH_LOAD_LOG_F1
+WF_INQUIRY_F1
