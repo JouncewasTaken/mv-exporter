@@ -466,10 +466,24 @@ def record(**rec):
         f.write(json.dumps(rec) + "\n")
 
 # ---------- main ----------
+def _http_status(e):
+    return getattr(getattr(e, "response", None), "status_code", None)
+
+def _reauth(driver):
+    # mint a fresh cacheID/token; if bounced to the login page, log in first
+    try:
+        cache_id, token = open_form(driver)
+    except SystemExit:
+        login(driver)
+        cache_id, token = open_form(driver)
+    return cache_id, token, session_from_driver(driver)
+
 def main():
     global MANIFEST
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-headless", action="store_true")
+    ap.add_argument("--retries", type=int, default=4,
+                    help="per-record attempts; re-auths on 401/403, backs off on 5xx")
     ap.add_argument("--form-url", help="override FORM_URL to select the module (AP/GL/AR)")
     ap.add_argument("--one", metavar="CID/VID",
                     help="fully process ONE voucher (enumerate->load->preload->fetch) verbosely, then exit")
@@ -536,17 +550,30 @@ def main():
             cid, vid = str(vl[COMPANY_COL]), vl[ID_COL]
             if (FORM_NAME, cid, vid) in done:
                 continue
-            try:
-                _, _, docs, skipped = load_docs(sess, cache_id, token, vl)
-                taken, saved = set(), []
-                for d in docs:
-                    saved.extend(download_doc(sess, cid, vid, d, cache_id, token, vl, taken))
-                    time.sleep(THROTTLE_S)
-                record(status="ok", form_name=FORM_NAME, company_id=cid, voucher_id=vid, files=saved,
-                       docs_seen=len(docs), year=args.year, skipped_deleted=[s["doc_ref"] for s in skipped])
-            except Exception as e:
-                record(status="error", form_name=FORM_NAME, company_id=cid, voucher_id=vid, note=repr(e))
-                print(f"[ERROR] {cid}/{vid}: {e!r}", file=sys.stderr)
+            for attempt in range(1, args.retries + 1):
+                try:
+                    _, _, docs, skipped = load_docs(sess, cache_id, token, vl)
+                    taken, saved = set(), []
+                    for d in docs:
+                        saved.extend(download_doc(sess, cid, vid, d, cache_id, token, vl, taken))
+                        time.sleep(THROTTLE_S)
+                    record(status="ok", form_name=FORM_NAME, company_id=cid, voucher_id=vid, files=saved,
+                           docs_seen=len(docs), year=args.year, skipped_deleted=[s["doc_ref"] for s in skipped])
+                    break
+                except Exception as e:
+                    st = _http_status(e)
+                    if attempt < args.retries and st in (401, 403):
+                        print(f"    [reauth] {cid}/{vid}: session expired, re-authenticating", file=sys.stderr)
+                        cache_id, token, sess = _reauth(driver)   # if this fails, aborts the year (resumable)
+                        continue
+                    if attempt < args.retries and st in (500, 502, 503, 504):
+                        back = min(120, 10 * attempt)
+                        print(f"    [retry {attempt}/{args.retries}] {cid}/{vid}: {st}; backoff {back}s", file=sys.stderr)
+                        time.sleep(back)
+                        continue
+                    record(status="error", form_name=FORM_NAME, company_id=cid, voucher_id=vid, note=repr(e))
+                    print(f"[ERROR] {cid}/{vid}: {e!r}", file=sys.stderr)
+                    break
     finally:
         driver.quit()
 
